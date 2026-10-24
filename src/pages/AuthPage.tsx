@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { UtensilsCrossed, Mail, Lock, ArrowLeft, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { UtensilsCrossed, Mail, Lock, ArrowLeft, AlertCircle, CheckCircle2, Leaf } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 
 export default function AuthPage() {
@@ -58,19 +58,19 @@ export default function AuthPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 via-stone-50 to-white flex items-center justify-center px-4 py-12">
+    <div className="min-h-screen bg-gradient-to-br from-sage-50 via-cream-50 to-white flex items-center justify-center px-4 py-12">
       <div className="max-w-md w-full">
-        <Link to="/" className="inline-flex items-center gap-2 text-stone-600 hover:text-green-700 transition-colors mb-6">
+        <Link to="/" className="inline-flex items-center gap-2 text-stone-600 hover:text-forest-700 transition-colors mb-6">
           <ArrowLeft className="w-4 h-4" />
           Back to home
         </Link>
 
-        <div className="bg-white rounded-2xl shadow-lg border border-stone-200 p-8">
+        <div className="bg-white rounded-3xl shadow-card-hover border border-stone-200/60 p-8">
           <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-14 h-14 bg-green-100 text-green-700 rounded-2xl mb-4">
+            <div className="inline-flex items-center justify-center w-14 h-14 bg-forest-100 text-forest-700 rounded-2xl mb-4">
               <UtensilsCrossed className="w-7 h-7" />
             </div>
-            <h1 className="text-2xl font-bold text-stone-800">
+            <h1 className="text-2xl font-bold text-stone-800 font-display">
               {mode === 'login' ? 'Welcome Back' : 'Create Account'}
             </h1>
             <p className="text-stone-500 text-sm mt-1">
@@ -88,7 +88,7 @@ export default function AuthPage() {
           )}
 
           {info && (
-            <div className="bg-green-50 border border-green-200 text-green-700 rounded-xl p-4 flex items-start gap-3 mb-5">
+            <div className="bg-forest-50 border border-forest-200 text-forest-700 rounded-xl p-4 flex items-start gap-3 mb-5">
               <CheckCircle2 className="w-5 h-5 mt-0.5 flex-shrink-0" />
               <p className="text-sm">{info}</p>
             </div>
@@ -104,7 +104,7 @@ export default function AuthPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
-                  className="w-full pl-11 pr-4 py-3 rounded-xl border border-stone-300 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-colors text-stone-800"
+                  className="w-full pl-11 pr-4 py-3 rounded-xl border border-stone-200 focus:border-forest-500 focus:ring-2 focus:ring-forest-200 outline-none transition-all text-stone-800 bg-cream-50/50"
                 />
               </div>
             </div>
@@ -118,7 +118,7 @@ export default function AuthPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="At least 6 characters"
-                  className="w-full pl-11 pr-4 py-3 rounded-xl border border-stone-300 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-colors text-stone-800"
+                  className="w-full pl-11 pr-4 py-3 rounded-xl border border-stone-200 focus:border-forest-500 focus:ring-2 focus:ring-forest-200 outline-none transition-all text-stone-800 bg-cream-50/50"
                 />
               </div>
             </div>
@@ -126,7 +126,7 @@ export default function AuthPage() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full bg-green-600 text-white py-3.5 rounded-xl font-semibold text-lg hover:bg-green-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full bg-forest-600 text-white py-3.5 rounded-xl font-semibold text-lg hover:bg-forest-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-soft"
             >
               {submitting ? 'Please wait...' : mode === 'login' ? 'Sign In' : 'Create Account'}
             </button>
@@ -138,7 +138,7 @@ export default function AuthPage() {
                 Don't have an account?{' '}
                 <button
                   onClick={() => { setMode('register'); setError(null); setInfo(null); }}
-                  className="text-green-700 font-semibold hover:underline"
+                  className="text-forest-700 font-semibold hover:underline"
                 >
                   Register
                 </button>
@@ -148,13 +148,18 @@ export default function AuthPage() {
                 Already have an account?{' '}
                 <button
                   onClick={() => { setMode('login'); setError(null); setInfo(null); }}
-                  className="text-green-700 font-semibold hover:underline"
+                  className="text-forest-700 font-semibold hover:underline"
                 >
                   Sign In
                 </button>
               </>
             )}
           </div>
+        </div>
+
+        <div className="mt-6 flex items-center justify-center gap-2 text-stone-400 text-xs">
+          <Leaf className="w-3.5 h-3.5" />
+          Reducing food waste, together
         </div>
       </div>
     </div>

@@ -220,15 +220,11 @@ export async function rejectRequest(
     if (req) req.status = 'rejected';
     return { error: null };
   }
-  const { data, error } = await supabase.rpc('update_request_status', {
-    p_request_id: requestId,
-    p_status: 'rejected',
-  });
-  if (error) return { error: error.message };
-  if (data && data.success === false) {
-    return { error: data.error };
-  }
-  return { error: null };
+  const { error } = await supabase
+    .from('donation_requests')
+    .update({ status: 'rejected' })
+    .eq('id', requestId);
+  return { error: error?.message ?? null };
 }
 
 export async function completeRequest(
@@ -239,15 +235,11 @@ export async function completeRequest(
     if (req) req.status = 'completed';
     return { error: null };
   }
-  const { data, error } = await supabase.rpc('update_request_status', {
-    p_request_id: requestId,
-    p_status: 'completed',
-  });
-  if (error) return { error: error.message };
-  if (data && data.success === false) {
-    return { error: data.error };
-  }
-  return { error: null };
+  const { error } = await supabase
+    .from('donation_requests')
+    .update({ status: 'completed' })
+    .eq('id', requestId);
+  return { error: error?.message ?? null };
 }
 
 export async function cancelRequest(
@@ -258,15 +250,11 @@ export async function cancelRequest(
     if (req) req.status = 'cancelled';
     return { error: null };
   }
-  const { data, error } = await supabase.rpc('update_request_status', {
-    p_request_id: requestId,
-    p_status: 'cancelled',
-  });
-  if (error) return { error: error.message };
-  if (data && data.success === false) {
-    return { error: data.error };
-  }
-  return { error: null };
+  const { error } = await supabase
+    .from('donation_requests')
+    .update({ status: 'cancelled' })
+    .eq('id', requestId);
+  return { error: error?.message ?? null };
 }
 
 // ──────────────────────────────────────────────

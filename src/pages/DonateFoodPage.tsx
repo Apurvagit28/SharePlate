@@ -105,12 +105,12 @@ export default function DonateFoodPage() {
 
   if (success) {
     return (
-      <div className="min-h-screen bg-stone-50 flex items-center justify-center px-4 py-16">
-        <div className="max-w-lg w-full bg-white rounded-2xl shadow-lg border border-stone-200 p-8 text-center">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-green-100 text-green-700 rounded-full mb-5">
+      <div className="min-h-screen bg-cream-50 flex items-center justify-center px-4 py-16">
+        <div className="max-w-lg w-full bg-white rounded-3xl shadow-card-hover border border-stone-200/60 p-8 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-forest-100 text-forest-700 rounded-full mb-5">
             <CheckCircle2 className="w-8 h-8" />
           </div>
-          <h2 className="text-2xl font-bold text-stone-800 mb-3">Listing Posted Successfully!</h2>
+          <h2 className="text-2xl font-bold text-stone-800 mb-3 font-display">Listing Posted Successfully!</h2>
           <p className="text-stone-600 mb-1">
             Your food donation has been listed and is now visible to people looking for food.
           </p>
@@ -122,13 +122,13 @@ export default function DonateFoodPage() {
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             <button
               onClick={() => setSuccess(false)}
-              className="bg-green-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-green-700 transition-colors"
+              className="bg-forest-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-forest-700 transition-colors"
             >
               Donate More Food
             </button>
             <a
               href="/find-food"
-              className="bg-white text-green-700 border-2 border-green-600 px-6 py-3 rounded-xl font-semibold hover:bg-green-50 transition-colors"
+              className="bg-white text-forest-700 border-2 border-forest-300 px-6 py-3 rounded-xl font-semibold hover:bg-forest-50 transition-colors"
             >
               View Listings
             </a>
@@ -139,27 +139,29 @@ export default function DonateFoodPage() {
   }
 
   const inputClass = (field: keyof FormState) =>
-    `w-full px-4 py-3 rounded-xl border outline-none transition-colors ${
+    `w-full px-4 py-3 rounded-xl border outline-none transition-all ${
       errors[field]
         ? 'border-red-400 focus:border-red-500 focus:ring-2 focus:ring-red-200'
-        : 'border-stone-300 focus:border-green-500 focus:ring-2 focus:ring-green-200'
-    } text-stone-800`;
+        : 'border-stone-200 focus:border-forest-500 focus:ring-2 focus:ring-forest-200'
+    } text-stone-800 bg-cream-50/50`;
 
   return (
-    <div className="min-h-screen bg-stone-50">
+    <div className="min-h-screen bg-cream-50">
       {/* Header */}
-      <div className="bg-white border-b border-stone-200">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="bg-gradient-to-br from-sage-50 via-cream-50 to-white border-b border-sage-200/60">
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-14">
           <div className="flex items-center gap-3 mb-2">
-            <HeartHandshake className="w-7 h-7 text-green-600" />
-            <h1 className="text-3xl font-bold text-stone-800">Donate Food</h1>
+            <div className="w-11 h-11 rounded-xl bg-forest-100 flex items-center justify-center">
+              <HeartHandshake className="w-6 h-6 text-forest-700" />
+            </div>
+            <h1 className="text-3xl md:text-4xl font-bold text-stone-800 font-display">Donate Food</h1>
           </div>
-          <p className="text-stone-600">
+          <p className="text-stone-600 max-w-2xl">
             Share your surplus food with the community. Fill in the details below so recipients know
             what's available and how to pick it up safely.
           </p>
           {isDemo && (
-            <p className="text-sm text-amber-700 mt-3 bg-amber-50 inline-block px-4 py-1.5 rounded-full">
+            <p className="text-sm text-amber-700 mt-3 bg-amber-50 inline-block px-4 py-1.5 rounded-full border border-amber-100">
               Sample mode — listings won't persist between sessions until Supabase is connected.
             </p>
           )}
@@ -167,7 +169,7 @@ export default function DonateFoodPage() {
       </div>
 
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <form onSubmit={handleSubmit} className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 md:p-8 space-y-6">
+        <form onSubmit={handleSubmit} className="bg-white rounded-3xl shadow-card border border-stone-200/60 p-6 md:p-8 space-y-6">
           {submitError && (
             <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4 flex items-start gap-3">
               <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
@@ -355,7 +357,7 @@ export default function DonateFoodPage() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full inline-flex items-center justify-center gap-2 bg-green-600 text-white py-4 rounded-xl font-semibold text-lg hover:bg-green-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full inline-flex items-center justify-center gap-2 bg-forest-600 text-white py-4 rounded-xl font-semibold text-lg hover:bg-forest-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-soft"
             >
               {submitting ? (
                 <>Posting...</>
