@@ -1,63 +1,85 @@
 -- ============================================================
--- SharePlate — Complete Migration Script for New Supabase Project
+-- SharePlate — Secure Migration Script for New Supabase Project
+-- Target: SharePlate-db (your own Supabase project)
 -- ============================================================
 --
--- SECURITY WARNING — READ BEFORE RUNNING
+-- WHAT THIS SCRIPT DOES
 --
--- This script creates PUBLIC Row Level Security policies that allow
--- anyone with the anon key to read, create, update, and delete ALL
--- rows in both tables. This is NOT secure for production use.
+-- This script builds the complete SharePlate schema with a secure
+-- authentication and authorization model built in from the start.
+-- It is designed for an EMPTY new database (no existing rows to
+-- preserve), which is why owner columns can be NOT NULL with a
+-- DEFAULT of auth.uid().
 --
--- The public policies exist because the current application has NO
--- authentication — no sign-in screen, no user sessions. The frontend
--- communicates with Supabase using only the anon (publishable) key.
--- Without public policies, the app would see zero rows and appear
--- broken. These policies are a prototype workaround, not a security
--- model.
+-- The frontend already has Supabase email/password authentication
+-- (sign-in/sign-up screen, auth context, protected routes for
+-- Donate Food and Dashboard, sign-out). This script makes the
+-- database match that auth model so the app is secure end-to-end.
 --
--- KNOWN LIMITATIONS OF THIS PROTOTYPE SETUP:
---   - Any visitor can delete or modify any listing or request.
---   - There is no way to identify who created a listing or request.
---   - The dashboard shows everyone's data, not a specific user's.
---   - The anon key is embedded in frontend code and is not secret.
+-- AUTHORIZATION MODEL
 --
--- BEFORE PRODUCTION USE, you must:
---   1. Add Supabase email/password authentication to the app.
---   2. Add user_id columns to both tables (see FUTURE section for
---      the safe nullable-then-backfill sequence).
---   3. Replace the public policies with ownership-scoped policies
---      using auth.uid() = user_id on BOTH tables.
---   4. Revoke anon grants and anon EXECUTE on the function.
---   5. Update accept_donation_request to verify the caller owns the
---      listing before accepting a request.
---   6. Build sign-in / sign-up screens in the frontend.
+--   - Donor (listing owner):  creates listings, and accepts /
+--     rejects / completes requests on their own listings.
+--   - Recipient (request owner): creates requests on any listing,
+--     and cancels their own requests.
+--   - Recipients do NOT accept their own requests.
+--   - All signed-in users can browse listings (and so can
+--     unauthenticated visitors) — Find Food / Home must work
+--     without login.
+--   - Requester contact details and messages are visible only to
+--     the requester and the listing owner, never the public.
 --
--- The "FUTURE AUTH MIGRATION" section at the bottom of this script
--- documents all six steps as GUIDANCE ONLY. It is NOT executable SQL
--- and must NOT be run as-is — it contains partial snippets that
--- require adaptation. Do NOT run that section now.
+-- WHAT IS PUBLIC vs. PRIVATE
 --
--- HOW TO APPLY THIS SCRIPT:
+--   food_listings: SELECT is public (anyone can browse). Writes
+--     (insert/update/delete) are owner-only.
+--   donation_requests: all access is authenticated-only. SELECT
+--     is visible to the requester OR the listing owner. Writes
+--     are restricted by ownership and by column privileges.
+--
+-- SECURITY HIGHLIGHTS
+--
+--   - Row Level Security enabled on every table.
+--   - Owner columns default to auth.uid() and are NOT client-set.
+--   - Update policies are paired with column-level grants so a
+--     client cannot change protected columns (status,
+--     reserved_quantity, user_id) through the Data API.
+--   - accept_donation_request, reject_donation_request, and
+--     complete_donation_request are SECURITY DEFINER functions
+--     that verify auth.uid() = the listing's owner before acting.
+--   - anon EXECUTE is revoked on all privileged functions.
+--   - No USING(true) policies on any write path.
+--
+-- HOW TO APPLY THIS SCRIPT
 --
 -- Option A — Supabase Dashboard SQL Editor:
---   1. Log in to your Supabase account at https://supabase.com
---   2. Open your new (empty) SharePlate-db project
---   3. Click "SQL Editor" in the left sidebar
---   4. Paste this entire script
---   5. Click "Run"
+--   1. Log in to https://supabase.com and open SharePlate-db.
+--   2. Click "SQL Editor" in the left sidebar.
+--   3. Paste this entire script and click "Run".
 --
--- Option B — Supabase CLI (if you have it installed):
+-- Option B — Supabase CLI (if installed):
 --   supabase db execute --project-ref <your-project-ref> < this file
 --
 -- This script is idempotent — safe to run multiple times.
 -- It does NOT drop or delete any existing data.
+--
+-- IMPORTANT: After running this script, also follow the steps in
+-- SUPABASE_MIGRATION_CHECKLIST.md to point the app at the new
+-- project and verify auth + RLS work together.
 -- ============================================================
+
 
 -- ============================================================
 -- TABLE 1: food_listings
 -- ============================================================
 -- Stores surplus food posted by donors.
 -- Each row represents one food donation listing.
+--
+-- user_id is the donor who owns the listing. It is NOT NULL and
+-- defaults to auth.uid() so an authenticated insert that omits
+-- user_id is still stamped with the caller. Clients cannot set
+-- user_id directly — it is excluded from the INSERT/UPDATE column
+-- grants, so a forged value is rejected.
 
 CREATE TABLE IF NOT EXISTS food_listings (
   id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -76,8 +98,18 @@ CREATE TABLE IF NOT EXISTS food_listings (
                             CHECK (status IN ('available','accepted','completed','cancelled')),
   reserved_quantity       numeric NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
   image_url               text,
+  user_id                 uuid NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
   created_at              timestamptz NOT NULL DEFAULT now()
 );
+
+-- Index for status-filtered browse queries
+CREATE INDEX IF NOT EXISTS idx_food_listings_status
+  ON food_listings(status);
+
+-- Index for "my listings" / dashboard queries
+CREATE INDEX IF NOT EXISTS idx_food_listings_user_id
+  ON food_listings(user_id);
+
 
 -- ============================================================
 -- TABLE 2: donation_requests
@@ -85,6 +117,10 @@ CREATE TABLE IF NOT EXISTS food_listings (
 -- Stores requests from recipients for specific food listings.
 -- Each request references a food_listing and tracks its lifecycle
 -- through pending -> accepted/rejected -> completed/cancelled.
+--
+-- user_id is the recipient who made the request. Same ownership
+-- pattern as food_listings: NOT NULL, defaults to auth.uid(), not
+-- client-set.
 
 CREATE TABLE IF NOT EXISTS donation_requests (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -95,87 +131,147 @@ CREATE TABLE IF NOT EXISTS donation_requests (
   status              text NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending','accepted','rejected','completed','cancelled')),
   message             text,
+  user_id             uuid NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now()
 );
 
--- ============================================================
--- INDEXES
--- ============================================================
--- Speed up common query patterns used by the application.
-
+-- Index for "requests on a listing" queries (listing detail page)
 CREATE INDEX IF NOT EXISTS idx_donation_requests_listing_id
   ON donation_requests(listing_id);
 
-CREATE INDEX IF NOT EXISTS idx_food_listings_status
-  ON food_listings(status);
+-- Index for "my requests" / dashboard queries
+CREATE INDEX IF NOT EXISTS idx_donation_requests_user_id
+  ON donation_requests(user_id);
+
 
 -- ============================================================
--- ROW LEVEL SECURITY
+-- ROW LEVEL SECURITY — food_listings
 -- ============================================================
--- RLS is enabled on both tables.
+-- RLS enabled. SELECT is public so Find Food / Home browsing works
+-- without login. All writes are owner-only (authenticated).
 --
--- WHY PUBLIC POLICIES?
--- The current application has NO authentication (no sign-in screen).
--- The frontend talks to Supabase using the anon key, which means
--- every request runs as the "anon" role. If policies were scoped to
--- "authenticated" only, the app would see zero rows -- it would appear
--- broken even though data exists in the table.
---
--- Since there is no login, all data is intentionally public/shared:
--- any visitor can browse listings, post donations, and submit requests.
--- The USING(true) / WITH CHECK(true) policies reflect this design.
---
--- WHEN YOU ADD AUTHENTICATION LATER:
--- Replace these public policies with ownership-scoped ones using
--- auth.uid(), and add user_id columns to both tables. See the
--- "FUTURE AUTH MIGRATION" section at the bottom of this script.
+-- Column privileges (below the policies) ensure that even the owner
+-- cannot change status, reserved_quantity, or user_id through the
+-- Data API — those columns are controlled by the SECURITY DEFINER
+-- accept/reject/complete functions.
 
 ALTER TABLE food_listings ENABLE ROW LEVEL SECURITY;
+
+-- Grants:
+--   - anon: SELECT only (public browse).
+--   - authenticated: SELECT (browse) + INSERT/UPDATE/DELETE on the
+--     owner-editable columns only (see column grants below).
+GRANT SELECT ON food_listings TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON food_listings TO authenticated;
+
+-- Narrow INSERT/UPDATE to the columns a donor legitimately sets.
+-- This prevents a client from setting status, reserved_quantity,
+-- user_id, or created_at directly.
+REVOKE INSERT ON food_listings FROM authenticated;
+GRANT INSERT (
+  food_name, quantity, unit, category, pickup_location,
+  availability_deadline, handling_info, allergen_info,
+  additional_instructions, donor_name, donor_contact, image_url
+) ON food_listings TO authenticated;
+
+REVOKE UPDATE ON food_listings FROM authenticated;
+GRANT UPDATE (
+  food_name, quantity, unit, category, pickup_location,
+  availability_deadline, handling_info, allergen_info,
+  additional_instructions, donor_name, donor_contact, image_url
+) ON food_listings TO authenticated;
+
+-- --- food_listings policies ---
+
+DROP POLICY IF EXISTS "select_listings_public" ON food_listings;
+CREATE POLICY "select_listings_public" ON food_listings FOR SELECT
+  TO anon, authenticated USING (true);
+
+DROP POLICY IF EXISTS "insert_own_listings" ON food_listings;
+CREATE POLICY "insert_own_listings" ON food_listings FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "update_own_listings" ON food_listings;
+CREATE POLICY "update_own_listings" ON food_listings FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "delete_own_listings" ON food_listings;
+CREATE POLICY "delete_own_listings" ON food_listings FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+
+-- ============================================================
+-- ROW LEVEL SECURITY — donation_requests
+-- ============================================================
+-- RLS enabled. All access is authenticated-only — request contact
+-- details and messages are private between requester and donor.
+--
+-- SELECT: visible to the requester OR the listing owner.
+-- INSERT: authenticated; the requester is the caller (user_id
+--   defaults to auth.uid()).
+-- UPDATE/DELETE: requester only, and column-restricted so the
+--   client cannot change status, listing_id, user_id, or
+--   reserved_quantity — status transitions go through the
+--   SECURITY DEFINER functions.
+
 ALTER TABLE donation_requests ENABLE ROW LEVEL SECURITY;
 
--- Grants: allow both anon and authenticated roles to reach the tables.
--- Grants decide WHETHER a role can access a table; RLS policies decide
--- WHICH rows. Both are needed.
+-- Grants: authenticated only (no anon access to requests at all).
+GRANT SELECT, INSERT, UPDATE, DELETE ON donation_requests TO authenticated;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON food_listings TO anon, authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON donation_requests TO anon, authenticated;
+-- Narrow INSERT to the columns a recipient legitimately sets.
+REVOKE INSERT ON donation_requests FROM authenticated;
+GRANT INSERT (
+  listing_id, requested_quantity, requester_name,
+  requester_contact, message
+) ON donation_requests TO authenticated;
 
--- --- food_listings policies (4 separate, one per CRUD verb) ---
+-- Narrow UPDATE to the columns a recipient can edit on their own
+-- request (NOT status — status is controlled by the functions).
+REVOKE UPDATE ON donation_requests FROM authenticated;
+GRANT UPDATE (
+  requested_quantity, requester_name, requester_contact, message
+) ON donation_requests TO authenticated;
 
-DROP POLICY IF EXISTS "public_select_listings" ON food_listings;
-CREATE POLICY "public_select_listings" ON food_listings FOR SELECT
-  TO anon, authenticated USING (true);
+-- --- donation_requests policies ---
 
-DROP POLICY IF EXISTS "public_insert_listings" ON food_listings;
-CREATE POLICY "public_insert_listings" ON food_listings FOR INSERT
-  TO anon, authenticated WITH CHECK (true);
+-- A request is visible to the requester or to the owner of the
+-- listing it targets. The EXISTS subquery checks the parent
+-- listing's owner without needing a user_id join column on the
+-- request itself for the donor side.
+DROP POLICY IF EXISTS "select_requests_as_requester_or_owner" ON donation_requests;
+CREATE POLICY "select_requests_as_requester_or_owner" ON donation_requests FOR SELECT
+  TO authenticated
+  USING (
+    auth.uid() = user_id
+    OR EXISTS (
+      SELECT 1 FROM food_listings
+      WHERE food_listings.id = donation_requests.listing_id
+        AND food_listings.user_id = auth.uid()
+    )
+  );
 
-DROP POLICY IF EXISTS "public_update_listings" ON food_listings;
-CREATE POLICY "public_update_listings" ON food_listings FOR UPDATE
-  TO anon, authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "insert_own_requests" ON donation_requests;
+CREATE POLICY "insert_own_requests" ON donation_requests FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "public_delete_listings" ON food_listings;
-CREATE POLICY "public_delete_listings" ON food_listings FOR DELETE
-  TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS "update_own_requests" ON donation_requests;
+CREATE POLICY "update_own_requests" ON donation_requests FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 
--- --- donation_requests policies (4 separate, one per CRUD verb) ---
+DROP POLICY IF EXISTS "delete_own_requests" ON donation_requests;
+CREATE POLICY "delete_own_requests" ON donation_requests FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "public_select_requests" ON donation_requests;
-CREATE POLICY "public_select_requests" ON donation_requests FOR SELECT
-  TO anon, authenticated USING (true);
-
-DROP POLICY IF EXISTS "public_insert_requests" ON donation_requests;
-CREATE POLICY "public_insert_requests" ON donation_requests FOR INSERT
-  TO anon, authenticated WITH CHECK (true);
-
-DROP POLICY IF EXISTS "public_update_requests" ON donation_requests;
-CREATE POLICY "public_update_requests" ON donation_requests FOR UPDATE
-  TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "public_delete_requests" ON donation_requests;
-CREATE POLICY "public_delete_requests" ON donation_requests FOR DELETE
-  TO anon, authenticated USING (true);
 
 -- ============================================================
 -- TRIGGER: auto-update updated_at on donation_requests
@@ -198,30 +294,35 @@ CREATE TRIGGER update_donation_requests_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+
 -- ============================================================
 -- FUNCTION: accept_donation_request
 -- ============================================================
 -- SECURITY DEFINER function that atomically accepts a request.
 --
--- This is the core over-reservation prevention mechanism. It runs
--- with elevated privileges (SECURITY DEFINER) so it can update both
--- tables in a single atomic operation, even though the caller (anon
--- role) would normally be limited by RLS.
+-- AUTHORIZATION: only the owner of the parent listing may accept
+-- a request on it. The function derives the caller from
+-- auth.uid() (never from a parameter) and verifies
+-- auth.uid() = food_listings.user_id. anon is revoked, so an
+-- unauthenticated call is rejected by the EXECUTE grant before
+-- the body runs.
 --
 -- Steps:
---   1. Lock the request row (FOR UPDATE) -- prevents concurrent modification.
---   2. Verify the request is still "pending".
---   3. Lock the parent listing row (FOR UPDATE) -- prevents concurrent accepts.
---   4. Verify the listing is still active (available or accepted).
---   5. Calculate available = quantity - reserved_quantity.
---   6. If requested > available, return an error (over-reservation prevented).
---   7. Atomically increment reserved_quantity on the listing.
---   8. If fully reserved, mark listing status as 'accepted'.
---   9. Set request status to 'accepted'.
---  10. Return success.
+--   1. Require an authenticated caller.
+--   2. Lock the request row (FOR UPDATE).
+--   3. Verify the request is still "pending".
+--   4. Lock the parent listing row (FOR UPDATE).
+--   5. Verify the caller owns the listing.
+--   6. Verify the listing is still active (available/accepted).
+--   7. Calculate available = quantity - reserved_quantity.
+--   8. If requested > available, return an error.
+--   9. Atomically increment reserved_quantity; if fully reserved,
+--      mark listing status 'accepted'.
+--  10. Set request status to 'accepted'.
+--  11. Return success.
 --
--- The row locking (FOR UPDATE) ensures that two concurrent accept
--- calls cannot both succeed and over-reserve the same listing.
+-- The row locking (FOR UPDATE) ensures that two concurrent accepts
+-- cannot both succeed and over-reserve the same listing.
 
 CREATE OR REPLACE FUNCTION accept_donation_request(p_request_id uuid)
 RETURNS jsonb
@@ -232,14 +333,22 @@ AS $$
 DECLARE
   v_listing_id      uuid;
   v_requested       numeric;
+  v_request_status  text;
   v_listing_status  text;
   v_quantity        numeric;
   v_reserved        numeric;
   v_available       numeric;
+  v_listing_owner   uuid;
 BEGIN
+  -- Require an authenticated caller. auth.uid() is the only source
+  -- of the caller's identity.
+  IF auth.uid() IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authenticated');
+  END IF;
+
   -- Lock the request row
   SELECT listing_id, requested_quantity, status
-    INTO v_listing_id, v_requested, v_listing_status
+    INTO v_listing_id, v_requested, v_request_status
   FROM donation_requests
   WHERE id = p_request_id
   FOR UPDATE;
@@ -248,20 +357,24 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'Request not found');
   END IF;
 
-  IF v_listing_status <> 'pending' THEN
-    RETURN jsonb_build_object('success', false, 'error',
-      'Request is not pending (current status: ' || v_listing_status || ')');
+  IF v_request_status <> 'pending' THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Request is not pending');
   END IF;
 
-  -- Lock the listing row
-  SELECT status, quantity, reserved_quantity
-    INTO v_listing_status, v_quantity, v_reserved
+  -- Lock the listing row and read its owner for authorization
+  SELECT status, quantity, reserved_quantity, user_id
+    INTO v_listing_status, v_quantity, v_reserved, v_listing_owner
   FROM food_listings
   WHERE id = v_listing_id
   FOR UPDATE;
 
   IF NOT FOUND THEN
     RETURN jsonb_build_object('success', false, 'error', 'Listing not found');
+  END IF;
+
+  -- Authorization: only the listing owner may accept requests.
+  IF v_listing_owner <> auth.uid() THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authorized');
   END IF;
 
   IF v_listing_status NOT IN ('available', 'accepted') THEN
@@ -271,12 +384,10 @@ BEGIN
   v_available := v_quantity - v_reserved;
 
   IF v_requested > v_available THEN
-    RETURN jsonb_build_object('success', false, 'error',
-      'Not enough available quantity. Available: ' || v_available ||
-      ', requested: ' || v_requested);
+    RETURN jsonb_build_object('success', false, 'error', 'Not enough available quantity');
   END IF;
 
-  -- Update reserved quantity and potentially mark listing as fully reserved
+  -- Update reserved quantity and mark listing 'accepted' if fully reserved
   UPDATE food_listings
     SET reserved_quantity = reserved_quantity + v_requested,
         status = CASE
@@ -294,129 +405,162 @@ BEGIN
 END;
 $$;
 
--- Execute permissions for accept_donation_request
---
--- SECURITY RISK: The anon role is granted EXECUTE so that unauthenticated
--- visitors can accept requests. This means ANYONE with the anon key can
--- call this function to accept ANY request on ANY listing — there is no
--- ownership verification. In the current prototype this is by design
--- (there is no login), but it must be locked down before production.
---
--- The standard pattern: revoke the default PUBLIC grant (all roles get
--- EXECUTE by default on new functions), then grant only to the roles
--- the application actually uses.
+REVOKE EXECUTE ON FUNCTION accept_donation_request(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION accept_donation_request(uuid) TO authenticated;
 
-REVOKE EXECUTE ON FUNCTION accept_donation_request(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION accept_donation_request(uuid) TO anon, authenticated;
 
 -- ============================================================
--- FUTURE AUTH MIGRATION (DO NOT RUN YET — READ FULLY BEFORE USING)
+-- FUNCTION: reject_donation_request
 -- ============================================================
--- When you add Supabase email/password authentication to SharePlate,
--- you must make ALL of the changes below. These are guidelines, not a
--- copy-paste script — the exact order and statements depend on whether
--- you have existing data that must be preserved.
+-- SECURITY DEFINER function that rejects a pending or accepted
+-- request. Only the listing owner may reject.
 --
--- CRITICAL: You cannot simply run these statements on a table that
--- already has rows. Adding a NOT NULL column with DEFAULT auth.uid()
--- will FAIL because auth.uid() returns NULL for any session-less
--- context (including ALTER TABLE ... ADD COLUMN). The correct
--- sequence for tables with existing data is:
+-- Because direct client UPDATE on donation_requests.status is
+-- blocked by column privileges, this function is the only path
+-- to set status = 'rejected'. It does NOT release reserved
+-- quantity (a pending request has not reserved anything; an
+-- accepted request that is later rejected would need a release
+-- path — see the NOTE below the function).
+
+CREATE OR REPLACE FUNCTION reject_donation_request(p_request_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_listing_id      uuid;
+  v_request_status  text;
+  v_listing_owner   uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authenticated');
+  END IF;
+
+  SELECT listing_id, status
+    INTO v_listing_id, v_request_status
+  FROM donation_requests
+  WHERE id = p_request_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Request not found');
+  END IF;
+
+  IF v_request_status NOT IN ('pending', 'accepted') THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Request cannot be rejected');
+  END IF;
+
+  SELECT user_id INTO v_listing_owner
+  FROM food_listings
+  WHERE id = v_listing_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Listing not found');
+  END IF;
+
+  IF v_listing_owner <> auth.uid() THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authorized');
+  END IF;
+
+  -- If the request was previously accepted, release its reserved
+  -- quantity before marking it rejected.
+  IF v_request_status = 'accepted' THEN
+    UPDATE food_listings
+      SET reserved_quantity = GREATEST(reserved_quantity - (
+            SELECT requested_quantity FROM donation_requests WHERE id = p_request_id
+          ), 0),
+          status = CASE
+            WHEN reserved_quantity - (SELECT requested_quantity FROM donation_requests WHERE id = p_request_id) < quantity THEN 'available'
+            ELSE status
+          END
+      WHERE id = v_listing_id;
+  END IF;
+
+  UPDATE donation_requests
+    SET status = 'rejected'
+  WHERE id = p_request_id;
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION reject_donation_request(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION reject_donation_request(uuid) TO authenticated;
+
+
+-- ============================================================
+-- FUNCTION: complete_donation_request
+-- ============================================================
+-- SECURITY DEFINER function that marks an accepted request as
+-- completed. Only the listing owner may complete a request.
+-- This is the handover confirmation step.
+
+CREATE OR REPLACE FUNCTION complete_donation_request(p_request_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_listing_id      uuid;
+  v_request_status  text;
+  v_listing_owner   uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authenticated');
+  END IF;
+
+  SELECT listing_id, status
+    INTO v_listing_id, v_request_status
+  FROM donation_requests
+  WHERE id = p_request_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Request not found');
+  END IF;
+
+  IF v_request_status <> 'accepted' THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Only accepted requests can be completed');
+  END IF;
+
+  SELECT user_id INTO v_listing_owner
+  FROM food_listings
+  WHERE id = v_listing_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Listing not found');
+  END IF;
+
+  IF v_listing_owner <> auth.uid() THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authorized');
+  END IF;
+
+  UPDATE donation_requests
+    SET status = 'completed'
+  WHERE id = p_request_id;
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION complete_donation_request(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION complete_donation_request(uuid) TO authenticated;
+
+
+-- ============================================================
+-- END OF SCRIPT
+-- ============================================================
+-- After running this, complete the steps in
+-- SUPABASE_MIGRATION_CHECKLIST.md to point the app at the new
+-- project and verify auth + RLS work together.
 --
---   a. Add the column as NULLABLE (no NOT NULL, no DEFAULT).
---   b. Backfill user_id for every existing row — you must determine
---      which user owns each row. If you cannot map existing rows to
---      users, those rows will be orphaned and invisible under the new
---      ownership-scoped policies.
---   c. Set the column to NOT NULL after all rows have a valid user_id.
---   d. Then proceed with the policy and grant changes below.
---
--- If you are starting with an empty database (no existing rows), you
--- can add the column with NOT NULL DEFAULT auth.uid() directly.
---
--- Step 1 — Add user_id columns (nullable first if data exists):
---
---    ALTER TABLE food_listings ADD COLUMN user_id uuid
---      REFERENCES auth.users(id) ON DELETE CASCADE;
---    ALTER TABLE donation_requests ADD COLUMN user_id uuid
---      REFERENCES auth.users(id) ON DELETE CASCADE;
---
---    -- Backfill existing rows here, then:
---    ALTER TABLE food_listings ALTER COLUMN user_id SET NOT NULL;
---    ALTER TABLE donation_requests ALTER COLUMN user_id SET NOT NULL;
---    ALTER TABLE food_listings ALTER COLUMN user_id SET DEFAULT auth.uid();
---    ALTER TABLE donation_requests ALTER COLUMN user_id SET DEFAULT auth.uid();
---
--- Step 2 — Drop the public policies created in this script and replace
--- with ownership-scoped policies on BOTH tables:
---
---    -- food_listings
---    DROP POLICY IF EXISTS "public_select_listings" ON food_listings;
---    DROP POLICY IF EXISTS "public_insert_listings" ON food_listings;
---    DROP POLICY IF EXISTS "public_update_listings" ON food_listings;
---    DROP POLICY IF EXISTS "public_delete_listings" ON food_listings;
---
---    CREATE POLICY "select_own_listings" ON food_listings FOR SELECT
---      TO authenticated USING (auth.uid() = user_id);
---    CREATE POLICY "insert_own_listings" ON food_listings FOR INSERT
---      TO authenticated WITH CHECK (auth.uid() = user_id);
---    CREATE POLICY "update_own_listings" ON food_listings FOR UPDATE
---      TO authenticated USING (auth.uid() = user_id)
---      WITH CHECK (auth.uid() = user_id);
---    CREATE POLICY "delete_own_listings" ON food_listings FOR DELETE
---      TO authenticated USING (auth.uid() = user_id);
---
---    -- donation_requests (recipient owns their own requests)
---    DROP POLICY IF EXISTS "public_select_requests" ON donation_requests;
---    DROP POLICY IF EXISTS "public_insert_requests" ON donation_requests;
---    DROP POLICY IF EXISTS "public_update_requests" ON donation_requests;
---    DROP POLICY IF EXISTS "public_delete_requests" ON donation_requests;
---
---    CREATE POLICY "select_own_requests" ON donation_requests FOR SELECT
---      TO authenticated USING (auth.uid() = user_id);
---    CREATE POLICY "insert_own_requests" ON donation_requests FOR INSERT
---      TO authenticated WITH CHECK (auth.uid() = user_id);
---    CREATE POLICY "update_own_requests" ON donation_requests FOR UPDATE
---      TO authenticated USING (auth.uid() = user_id)
---      WITH CHECK (auth.uid() = user_id);
---    CREATE POLICY "delete_own_requests" ON donation_requests FOR DELETE
---      TO authenticated USING (auth.uid() = user_id);
---
--- Step 3 — Revoke anon access so only authenticated users reach the tables:
---
---    REVOKE SELECT, INSERT, UPDATE, DELETE ON food_listings FROM anon;
---    REVOKE SELECT, INSERT, UPDATE, DELETE ON donation_requests FROM anon;
---
--- Step 4 — Revoke anon execute on the accept_donation_request function:
---
---    REVOKE EXECUTE ON FUNCTION accept_donation_request(uuid) FROM anon;
---
--- Step 5 — Update accept_donation_request to verify the caller owns the
--- listing before accepting a request. The function is SECURITY DEFINER
--- and bypasses RLS, so it MUST perform its own ownership check.
---
---    -- Add to the DECLARE block:
---    v_listing_owner uuid;
---
---    -- Inside the function, after locking the listing row, add:
---    IF auth.uid() IS NULL THEN
---      RETURN jsonb_build_object('success', false, 'error', 'Not authenticated');
---    END IF;
---    -- Verify the caller owns the listing being accepted on:
---    SELECT user_id INTO v_listing_owner
---    FROM food_listings WHERE id = v_listing_id FOR UPDATE;
---    IF v_listing_owner <> auth.uid() THEN
---      RETURN jsonb_build_object('success', false, 'error', 'Not authorized');
---    END IF;
---
---    NOTE: If recipients (not just donors) need to accept requests,
---    adjust the ownership check to match your application's
---    authorization model.
---
--- Step 6 — Build sign-in and sign-up screens in the frontend so users
--- can get an authenticated session before any of the above takes effect.
---
--- WARNING: Steps 1-5 must be applied together. Applying only some of
--- them will either break the app (e.g. revoking anon without adding
--- auth) or leave security holes (e.g. adding user_id without updating
--- the SECURITY DEFINER function's ownership check).
+-- REMINDER: This script assumes an EMPTY target database. If your
+-- SharePlate-db project already has rows in food_listings or
+-- donation_requests, do NOT run this as-is — the NOT NULL
+-- user_id columns will fail to backfill. In that case, add the
+-- columns as nullable first, backfill user_id per row, then set
+-- NOT NULL. See the checklist for the safe-with-data sequence.
