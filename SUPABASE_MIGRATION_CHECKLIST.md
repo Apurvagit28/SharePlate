@@ -113,7 +113,7 @@ WHERE polrelid IN ('food_listings'::regclass, 'donation_requests'::regclass);
 --     insert_own_requests, update_own_requests, delete_own_requests
 ```
 
-### Functions (3 SECURITY DEFINER, anon revoked)
+### Functions (4 SECURITY DEFINER + 1 aggregate, anon revoked)
 
 ```sql
 SELECT proname, prosecdef
@@ -122,9 +122,12 @@ WHERE proname IN (
   'accept_donation_request',
   'reject_donation_request',
   'complete_donation_request',
+  'cancel_donation_request',
+  'get_impact_stats',
   'update_updated_at_column'
 );
--- Expected: the three request functions have prosecdef = true;
+-- Expected: the four request functions have prosecdef = true;
+--   get_impact_stats has prosecdef = false (SECURITY INVOKER);
 --   update_updated_at_column is the trigger helper (prosecdef = false)
 ```
 
@@ -137,9 +140,13 @@ WHERE routine_schema = 'public'
   AND routine_name IN (
     'accept_donation_request',
     'reject_donation_request',
-    'complete_donation_request'
+    'complete_donation_request',
+    'cancel_donation_request',
+    'get_impact_stats'
   );
--- Expected: only 'authenticated' has EXECUTE; 'anon' must NOT appear.
+-- Expected:
+--   accept/reject/complete/cancel: only 'authenticated' has EXECUTE; 'anon' must NOT appear.
+--   get_impact_stats: both 'anon' and 'authenticated' have EXECUTE (public aggregate).
 ```
 
 ### Column privileges (protected columns are not client-writable)

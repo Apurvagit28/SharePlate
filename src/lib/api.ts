@@ -5,7 +5,6 @@ import type {
   DonationRequest,
   NewListingInput,
   NewRequestInput,
-  ListingStatus,
 } from '@/types';
 
 // ──────────────────────────────────────────────
@@ -86,18 +85,9 @@ export async function createListing(
   return { data: data as FoodListing, error: null };
 }
 
-export async function updateListingStatus(
-  id: string,
-  status: ListingStatus
-): Promise<{ error: string | null }> {
-  if (!isSupabaseConfigured) {
-    const listing = sampleListings.find((l) => l.id === id);
-    if (listing) listing.status = status;
-    return { error: null };
-  }
-  const { error } = await supabase.from('food_listings').update({ status }).eq('id', id);
-  return { error: error?.message ?? null };
-}
+// Listing status is a protected column: clients cannot update it directly.
+// It is changed only by the accept_donation_request / reject_donation_request /
+// complete_donation_request SECURITY DEFINER functions, which verify ownership.
 
 // ──────────────────────────────────────────────
 // Requests
@@ -183,78 +173,86 @@ export async function createRequest(
   return { data: data as DonationRequest, error: null };
 }
 
-export async function acceptRequest(
-  requestId: string
+async function callRequestRpc(
+  fn: 'accept_donation_request' | 'reject_donation_request' | 'complete_donation_request' | 'cancel_donation_request',
+  requestId: string,
+  sampleApply?: (req: DonationRequest, listing?: FoodListing) => { error: string | null }
 ): Promise<{ error: string | null }> {
   if (!isSupabaseConfigured) {
     const req = sampleRequests.find((r) => r.id === requestId);
     if (!req) return { error: 'Request not found' };
     const listing = sampleListings.find((l) => l.id === req.listing_id);
     if (!listing) return { error: 'Listing not found' };
-    const available = listing.quantity - listing.reserved_quantity;
+    if (sampleApply) return sampleApply(req, listing);
+    return { error: null };
+  }
+  const { data, error } = await supabase.rpc(fn, { p_request_id: requestId });
+  if (error) return { error: mapRpcError(error) };
+  if (data && data.success === false) {
+    return { error: data.error ?? 'Request could not be updated' };
+  }
+  return { error: null };
+}
+
+function mapRpcError(error: { message?: string; code?: string }): string {
+  const msg = error.message ?? '';
+  if (msg.includes('Not authenticated')) return 'You must be signed in to do that.';
+  if (msg.includes('Not authorized')) return 'You are not allowed to do that.';
+  if (msg.includes('not found')) return 'This request could not be found.';
+  return 'Could not update the request. Please try again.';
+}
+
+export async function acceptRequest(
+  requestId: string
+): Promise<{ error: string | null }> {
+  return callRequestRpc('accept_donation_request', requestId, (req, listing) => {
+    const available = listing!.quantity - listing!.reserved_quantity;
     if (req.requested_quantity > available) {
       return { error: 'Not enough available quantity' };
     }
-    listing.reserved_quantity += req.requested_quantity;
-    if (listing.reserved_quantity >= listing.quantity) {
-      listing.status = 'accepted';
+    listing!.reserved_quantity += req.requested_quantity;
+    if (listing!.reserved_quantity >= listing!.quantity) {
+      listing!.status = 'accepted';
     }
     req.status = 'accepted';
     return { error: null };
-  }
-  const { data, error } = await supabase.rpc('accept_donation_request', {
-    p_request_id: requestId,
   });
-  if (error) return { error: error.message };
-  if (data && data.success === false) {
-    return { error: data.error };
-  }
-  return { error: null };
 }
 
 export async function rejectRequest(
   requestId: string
 ): Promise<{ error: string | null }> {
-  if (!isSupabaseConfigured) {
-    const req = sampleRequests.find((r) => r.id === requestId);
-    if (req) req.status = 'rejected';
+  return callRequestRpc('reject_donation_request', requestId, (req) => {
+    req.status = 'rejected';
     return { error: null };
-  }
-  const { error } = await supabase
-    .from('donation_requests')
-    .update({ status: 'rejected' })
-    .eq('id', requestId);
-  return { error: error?.message ?? null };
+  });
 }
 
 export async function completeRequest(
   requestId: string
 ): Promise<{ error: string | null }> {
-  if (!isSupabaseConfigured) {
-    const req = sampleRequests.find((r) => r.id === requestId);
-    if (req) req.status = 'completed';
+  return callRequestRpc('complete_donation_request', requestId, (req) => {
+    req.status = 'completed';
     return { error: null };
-  }
-  const { error } = await supabase
-    .from('donation_requests')
-    .update({ status: 'completed' })
-    .eq('id', requestId);
-  return { error: error?.message ?? null };
+  });
 }
 
 export async function cancelRequest(
   requestId: string
 ): Promise<{ error: string | null }> {
-  if (!isSupabaseConfigured) {
-    const req = sampleRequests.find((r) => r.id === requestId);
-    if (req) req.status = 'cancelled';
+  return callRequestRpc('cancel_donation_request', requestId, (req, listing) => {
+    if (req.status === 'accepted') {
+      listing!.reserved_quantity = Math.max(
+        listing!.reserved_quantity - req.requested_quantity,
+        0
+      );
+      if (listing!.reserved_quantity < listing!.quantity) {
+        listing!.status = 'available';
+      }
+    }
+    req.status = 'cancelled';
     return { error: null };
-  }
-  const { error } = await supabase
-    .from('donation_requests')
-    .update({ status: 'cancelled' })
-    .eq('id', requestId);
-  return { error: error?.message ?? null };
+  });
 }
 
 // ──────────────────────────────────────────────
@@ -268,33 +266,23 @@ export async function fetchImpactStats(): Promise<{
   if (!isSupabaseConfigured) {
     return { data: sampleImpactStats, error: null };
   }
-  const { count: totalListings, error: e1 } = await supabase
-    .from('food_listings')
-    .select('*', { count: 'exact', head: true });
-  if (e1) return { data: null, error: e1.message };
-
-  const { count: completedDonations, error: e2 } = await supabase
-    .from('donation_requests')
-    .select('*', { count: 'exact', head: true })
-    .eq('status', 'completed');
-  if (e2) return { data: null, error: e2.message };
-
-  const { data: sumData, error: e3 } = await supabase
-    .from('donation_requests')
-    .select('requested_quantity')
-    .eq('status', 'completed');
-  if (e3) return { data: null, error: e3.message };
-
-  const meals = (sumData as { requested_quantity: number }[] | null)?.reduce(
-    (acc, r) => acc + Number(r.requested_quantity),
-    0
-  ) ?? 0;
-
+  // Use the SECURITY INVOKER get_impact_stats() RPC so unauthenticated
+  // visitors (anon) can see community-wide aggregates even though anon
+  // has no SELECT on donation_requests. The function exposes only
+  // counts, no row-level data.
+  const { data, error } = await supabase.rpc('get_impact_stats');
+  if (error) return { data: null, error: error.message };
+  const stats = data as {
+    total_listings: number;
+    completed_donations: number;
+    meals_redistributed: number;
+  } | null;
+  if (!stats) return { data: null, error: null };
   return {
     data: {
-      totalListings: totalListings ?? 0,
-      completedDonations: completedDonations ?? 0,
-      mealsRedistributed: meals,
+      totalListings: Number(stats.total_listings) ?? 0,
+      completedDonations: Number(stats.completed_donations) ?? 0,
+      mealsRedistributed: Number(stats.meals_redistributed) ?? 0,
     },
     error: null,
   };

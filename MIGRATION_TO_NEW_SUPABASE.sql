@@ -552,6 +552,134 @@ GRANT EXECUTE ON FUNCTION complete_donation_request(uuid) TO authenticated;
 
 
 -- ============================================================
+-- FUNCTION: cancel_donation_request
+-- ============================================================
+-- SECURITY DEFINER function that cancels a request. Only the
+-- REQUESTER (the user who made the request) may cancel it.
+--
+-- This is the recipient-side counterpart to accept/reject/complete.
+-- Because the secure schema revokes client UPDATE on the status
+-- column, cancellation also goes through a SECURITY DEFINER
+-- function — the only path to set status = 'cancelled'. The
+-- function verifies auth.uid() = donation_requests.user_id, so a
+-- user cannot cancel another user's request.
+--
+-- If the request was previously accepted, its reserved quantity
+-- is released back to the listing (mirroring reject_donation_request).
+
+CREATE OR REPLACE FUNCTION cancel_donation_request(p_request_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $
+DECLARE
+  v_listing_id      uuid;
+  v_request_status  text;
+  v_requested       numeric;
+  v_requester_id    uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authenticated');
+  END IF;
+
+  -- Lock the request row and read its owner + state.
+  SELECT listing_id, status, requested_quantity, user_id
+    INTO v_listing_id, v_request_status, v_requested, v_requester_id
+  FROM donation_requests
+  WHERE id = p_request_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Request not found');
+  END IF;
+
+  -- Authorization: only the requester may cancel their own request.
+  IF v_requester_id <> auth.uid() THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authorized');
+  END IF;
+
+  IF v_request_status NOT IN ('pending', 'accepted') THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Request cannot be cancelled');
+  END IF;
+
+  -- If the request was accepted, release its reserved quantity.
+  IF v_request_status = 'accepted' THEN
+    UPDATE food_listings
+      SET reserved_quantity = GREATEST(reserved_quantity - v_requested, 0),
+          status = CASE
+            WHEN GREATEST(reserved_quantity - v_requested, 0) < quantity THEN 'available'
+            ELSE status
+          END
+      WHERE id = v_listing_id;
+  END IF;
+
+  UPDATE donation_requests
+    SET status = 'cancelled'
+  WHERE id = p_request_id;
+
+  RETURN jsonb_build_object('success', true);
+END;
+$;
+
+REVOKE EXECUTE ON FUNCTION cancel_donation_request(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION cancel_donation_request(uuid) TO authenticated;
+
+
+-- ============================================================
+-- FUNCTION: get_impact_stats
+-- ============================================================
+-- SECURITY INVOKER function that returns aggregate community
+-- impact stats: total listings, completed donations, and meals
+-- redistributed.
+--
+-- WHY THIS EXISTS: the secure schema grants anon SELECT only on
+-- food_listings (public browse), NOT on donation_requests (private
+-- to requester + listing owner). The homepage shows community-wide
+-- impact stats to unauthenticated visitors, so a direct count on
+-- donation_requests would return 0 (or an error) for anon. This
+-- function returns only aggregate counts — no row-level data is
+-- exposed — so it is safe to grant to anon.
+--
+-- Returns: jsonb with total_listings, completed_donations,
+-- meals_redistributed.
+
+CREATE OR REPLACE FUNCTION get_impact_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $
+DECLARE
+  v_total_listings      bigint;
+  v_completed_donations bigint;
+  v_meals               numeric;
+BEGIN
+  SELECT count(*) INTO v_total_listings
+  FROM food_listings;
+
+  SELECT count(*) INTO v_completed_donations
+  FROM donation_requests
+  WHERE status = 'completed';
+
+  SELECT COALESCE(sum(requested_quantity), 0) INTO v_meals
+  FROM donation_requests
+  WHERE status = 'completed';
+
+  RETURN jsonb_build_object(
+    'total_listings', v_total_listings,
+    'completed_donations', v_completed_donations,
+    'meals_redistributed', v_meals
+  );
+END;
+$;
+
+-- Aggregate-only function: safe for anon (no row-level data).
+REVOKE EXECUTE ON FUNCTION get_impact_stats() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_impact_stats() TO anon, authenticated;
+
+
+-- ============================================================
 -- END OF SCRIPT
 -- ============================================================
 -- After running this, complete the steps in
